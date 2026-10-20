@@ -12,13 +12,14 @@
 - 仅使用 Konachan，查询标签为 `scenic no_humans rating:safe`
 - 额外过滤人物相关标签以及带 `watermark` 的图片
 - Konachan API 直连被 Cloudflare 人机验证拦截时，自动通过 Jina Reader 读取同一份 Konachan JSON 元数据；图片本身仍然只来自 Konachan，并继续通过 `wsrv.nl` 缩放
-- 每次请求随机选图，不做 Worker 端缓存
+- 直连和 Jina Reader 都不可达或返回空图池时，使用 `worker.js` 内嵌的最近 Konachan 图池兜底；图片仍只来自 Konachan，仍通过 `wsrv.nl` 缩放
+- 每次请求随机选图，不做 Worker 端 HTTP 响应缓存
 - 手机、平板、PC 自适应：
   - 手机：`720 × 1280`
   - 平板：`800 × 1200`
   - PC：`1920 × 1080`
 - 支持 URL 自定义尺寸和方向
-- 上游失败时返回内嵌 PNG，图片中显示“图片获取失败 / 请稍后刷新重试”
+- 实时图池、内嵌图池和缩放服务都失败时，返回内嵌 PNG，图片中显示“图片获取失败 / 请稍后刷新重试”
 - 所有响应均为 `Cache-Control: no-store`
 - 支持 CORS、`HEAD` 和 `OPTIONS`
 
@@ -35,7 +36,7 @@ acg/
 | `worker.js` | Worker 全部代码，包含 4 张 Base64 PNG 失败占位图 |
 | `README.md` | 项目说明 |
 
-`worker.js` 约 175 KB，其中大部分是内嵌的 PNG 占位图数据，符合 Cloudflare Workers 免费套餐的大小限制。
+`worker.js` 约 197 KB，其中包含 4 张内嵌 PNG 占位图和 84 条 Konachan 内嵌图池数据，符合 Cloudflare Workers 免费套餐的大小限制。
 
 ## 🔌 API
 
@@ -82,6 +83,7 @@ GET /?format=json
 {
   "code": 200,
   "provider": "konachan",
+  "pool": "live",
   "id": 123456,
   "width": 1920,
   "height": 1080,
@@ -93,6 +95,8 @@ GET /?format=json
   "source": "https://www.pixiv.net/artworks/..."
 }
 ```
+
+`pool` 字段为 `live`（实时 API/Jina）或 `embedded`（内嵌图池）。
 
 ### 302 跳转
 
@@ -144,19 +148,33 @@ GET /health
 | PC | `1920 × 1080` | 横图 |
 | 方形 | `1080 × 1080` | 方图 |
 
+排查手机尺寸时，可直接用 `?w=720&h=1280` 强制手机目标尺寸；`?format=json` 返回的 `width` / `height` 就是本次实际目标尺寸。
+
 失败占位图同样按方向和比例选择：
 
 - 竖图：`720 × 1280` 或 `800 × 1200`
 - 横图：`1920 × 1080`
 - 方图：`1080 × 1080`
 
+## 🧩 图池兜底顺序
+
+Worker 按以下顺序获取图池：
+
+1. 直接请求 Konachan `post.json`
+2. 直连失败时，通过 Jina Reader 读取同一份 Konachan JSON
+3. 以上都失败、超时或返回空图池时，使用 `worker.js` 内嵌的最近 Konachan 图池
+4. 内嵌图片也无法通过 `wsrv.nl` 获取时，返回失败占位图
+
+内嵌图池是最近一次从 Konachan 拉取并过滤的静态列表，不是第二图源，也不是 HTTP 响应缓存。图池中的图片仍然只来自 Konachan，仍通过 `wsrv.nl` 缩放；所有响应继续使用 `Cache-Control: no-store`。
+
 ## 🖼️ 上游失败时的兜底
 
-当 Konachan 和缩放服务全部获取失败时，默认图片模式会返回一张内嵌 PNG：
+当实时图池、内嵌图池和缩放服务全部失败时，默认图片模式会返回一张内嵌 PNG：
 
 - HTTP 状态码：`200`
 - `Content-Type: image/png`
 - `X-Image-Fallback: 1`
+- `X-Image-Pool: fallback`
 - `X-Image-Provider: fallback`
 - `X-Image-Id: fallback`
 - `Cache-Control: no-store`
@@ -164,7 +182,7 @@ GET /health
 
 因此浏览器 `<img>` 不会把 502 JSON 当成图片显示。
 
-`format=json` 和 `format=redirect` 不是图片响应，上游失败时仍返回 `502` JSON：
+`format=json` 和 `format=redirect` 不是图片响应；只有实时图池和内嵌图池都不可用时，才返回 `502` JSON：
 
 ```json
 {
@@ -187,6 +205,7 @@ GET /health
 | `X-Target-Width` | 本次请求的目标宽度 |
 | `X-Target-Height` | 本次请求的目标高度 |
 | `X-Image-Resized` | 是否经过缩放，`1` 或 `0` |
+| `X-Image-Pool` | 图池来源：`live`、`embedded` 或 `fallback` |
 | `X-Image-Fallback` | 是否使用失败占位图，`1` 或 `0` |
 
 所有响应都会设置：

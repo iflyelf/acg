@@ -11,10 +11,11 @@
  * to a provider that may return characters.
  *
  * This worker does not depend on any domestic image CDN.
- * No worker-side pool cache: every request fetches a fresh pool and selects a
- * random image. Repeats are possible because the selection is random and no
- * seen-image state is stored. Every response is explicitly marked as
- * non-cacheable.
+ * No worker-side HTTP response cache: every request tries a fresh Konachan pool
+ * and selects a random image. If the live pool is unavailable, a static
+ * last-known Konachan pool embedded in this file is used. Repeats are possible
+ * because no seen-image state is stored. Every response is explicitly marked
+ * as non-cacheable.
  */
 
 const FALLBACK_IMAGE_DATA = {
@@ -1262,6 +1263,95 @@ const FALLBACK_IMAGES = Object.fromEntries(
 );
 
 
+// 最近一次从 Konachan 拉取并过滤的图池，仅在实时 API/Jina 不可达时使用。
+// 每项为 [id, width, height, file_url]，均来自 scenic no_humans rating:safe。
+const STATIC_KONACHAN_POOL = [
+  [408741,1500,1062,"https://konachan.net/image/862c10c04da4a77e95983c7aefffb1b0/Konachan.com%20-%20408741%20building%20city%20flowers%20kemi_neko%20leaves%20no_humans%20original%20scenic%20shade%20stairs%20tree.jpg"],
+  [408251,4680,2960,"https://konachan.net/image/688e724f23cfae56c6e8a4141358cb25/Konachan.com%20-%20408251%20clouds%20nengoro%20no_humans%20original%20reflection%20scenic%20signed%20sky%20stars%20tree.png"],
+  [407007,3840,2160,"https://konachan.net/image/11373bdfac048bd9e3b678ae292c7a4f/Konachan.com%20-%20407007%20alisi%20building%20clouds%20industrial%20no_humans%20original%20scenic%20water.jpg"],
+  [403995,3840,2160,"https://konachan.net/image/66675fa4b2631b4500e1a55eeff5cdf8/Konachan.com%20-%20403995%20building%20cherry_blossoms%20flowers%20grass%20night%20no_humans%20original%20petals%20reflection%20scenic%20smile_%28qd4nsvik%29%20spring%20tree%20water.jpg"],
+  [403994,1920,1080,"https://konachan.net/image/4a05b6c338a1ca9186ef82e1b9f0d28b/Konachan.com%20-%20403994%20building%20moon%20night%20no_humans%20original%20scenic%20sky%20smile_%28qd4nsvik%29%20snow%20stars%20tree%20winter.jpg"],
+  [401531,4093,2100,"https://konachan.net/image/baa565a82e97a60d10ba49a099ac5213/Konachan.com%20-%20401531%20forest%20green%20no_humans%20original%20pension_z%20scenic%20tree%20water%20waterfall.jpg"],
+  [401400,3612,2371,"https://konachan.net/image/87015395395aab7844cc91e33c1d14fc/Konachan.com%20-%20401400%20clouds%20grass%20no_humans%20original%20pension_z%20scenic%20shade%20sky%20tree.png"],
+  [399936,3840,2429,"https://konachan.net/image/bd052daddd8d2f0abc3f6ea11e877b68/Konachan.com%20-%20399936%20clouds%20landscape%20no_humans%20original%20reflection%20scenic%20sky%20water%20yu_jing.png"],
+  [399635,3385,2160,"https://konachan.net/image/b86a9a1c2b36cf47048c1ee5b1271d12/Konachan.com%20-%20399635%20banishment%20building%20clouds%20no_humans%20original%20scenic%20signed%20sky%20sunset.jpg"],
+  [399634,2400,1350,"https://konachan.net/image/9ffb345bc7c6647064fbd6fa76797d4e/Konachan.com%20-%20399634%20banishment%20clouds%20industrial%20no_humans%20original%20scenic%20signed%20sky%20sunset.jpg"],
+  [399632,3840,2160,"https://konachan.net/image/f04e02a03fa2b403af51e097efe2f3a9/Konachan.com%20-%20399632%20animal%20banishment%20fish%20mirror%20no_humans%20original%20scenic%20signed%20sunset%20tree.png"],
+  [399631,3840,2160,"https://konachan.net/image/d149643b347a5737da07cf7597eb7356/Konachan.com%20-%20399631%20banishment%20building%20car%20clouds%20no_humans%20original%20scenic%20signed%20sky%20sunset.png"],
+  [398707,1300,919,"https://konachan.net/image/c9836af8598b6fd59601abe1c3a0338b/Konachan.com%20-%20398707%20alpcmas%20clouds%20leaves%20no_humans%20original%20polychromatic%20rain%20scenic%20signed%20sky%20tree%20water.png"],
+  [398454,3840,2160,"https://konachan.net/image/655322e2c46e062b7a49701d6d042ead/Konachan.com%20-%20398454%203d%20blue_archive%20book%20building%20clouds%20gun%20kuchinashi_yume%20no_humans%20scenic%20sky%20sunset%20takanashi_hoshino%20tree%20weapon%20whiteghost03.png"],
+  [396601,3500,1691,"https://konachan.net/image/fb286c7246a2fd3db61e279a5088d53e/Konachan.com%20-%20396601%20animal%20bird%20clouds%20flowers%20grass%20landscape%20no_humans%20original%20petals%20scenic%20shiki_makoto%20signed%20sky%20tree%20water%20waterfall.jpg"],
+  [393103,2024,1219,"https://konachan.net/image/272c257ad8d76cdb76d38ce6aaf22be2/Konachan.com%20-%20393103%20car%20clouds%20hariken%20landscape%20no_humans%20original%20scenic%20sky%20tree.png"],
+  [392879,4250,2500,"https://konachan.net/image/48b95117eae8cadd858587ebf90f27a8/Konachan.com%20-%20392879%20beach%20bell%20clouds%20fapka%20lighthouse%20no_humans%20original%20scenic%20sky%20summer%20water.png"],
+  [390020,1358,889,"https://konachan.net/image/355dc1efb17e6d9fae7c43110617f19a/Konachan.com%20-%20390020%20building%20clouds%20cropped%20landscape%20mugumo_24k%20no_humans%20original%20reflection%20scenic%20signed%20sky%20train%20tree%20water.png"],
+  [389683,3840,2160,"https://konachan.net/image/41af3e75fc3ef4ec94b9e4a8e57968de/Konachan.com%20-%20389683%20banishment%20close%20dark%20grass%20no_humans%20original%20reflection%20scenic%20signed%20water.png"],
+  [388737,3840,2244,"https://konachan.net/image/de652ee11bae4340f90c7c367f551eef/Konachan.com%20-%20388737%20animal%20bird%20building%20cat%20city%20clouds%20no_humans%20original%20scenic%20signed%20sky%20sunset%20water%20yu_jing.jpg"],
+  [388362,1454,846,"https://konachan.net/image/46acffebb6e4e935a7c670f931c41cb9/Konachan.com%20-%20388362%20animal%20forest%20fox%20jing_%28jiunn1985matw%29%20leaves%20night%20no_humans%20original%20scenic%20signed%20silhouette%20sky%20tree%20water%20waterfall.png"],
+  [388361,1334,816,"https://konachan.net/image/e7d2fbf5895fc64f35d0c327930aac07/Konachan.com%20-%20388361%20building%20clouds%20jing_%28jiunn1985matw%29%20no_humans%20original%20polychromatic%20scenic%20sky%20sunset%20tree.png"],
+  [388359,1620,838,"https://konachan.net/image/80a81b6ce56d269c56170251b49ac6f9/Konachan.com%20-%20388359%20building%20city%20clouds%20jing_%28jiunn1985matw%29%20night%20no_humans%20original%20scenic%20signed%20sky%20tree%20water.png"],
+  [387796,1920,1080,"https://konachan.net/image/ca7fe761a555e218926ad4d286e50840/Konachan.com%20-%20387796%20building%20city%20clouds%20leaves%20no_humans%20original%20reason_%28mark-of-the-unicorn%29%20scenic%20shade%20sky%20tree.png"],
+  [383987,4000,2250,"https://konachan.net/image/3e8fae90c367fbff84a5ab2c185f575f/Konachan.com%20-%20383987%20animal%20forest%20fox%20legna_%28legna_161cm%29%20multiple_tails%20ninetales%20no_humans%20pokemon%20scenic%20signed%20snow%20tail%20tree%20vulpix%20water%20winter.png"],
+  [381792,2011,1015,"https://konachan.net/image/585e0bb6f1c1f6486097e29c0b69cace/Konachan.com%20-%20381792%20beach%20clouds%20grass%20leaves%20magaoo12%20no_humans%20original%20scenic%20sky%20water.png"],
+  [379173,4096,2304,"https://konachan.net/image/fbfa6e5f3079437c021d0cbbd28f7388/Konachan.com%20-%20379173%20beach%20close%20clouds%20drink%20nap_on_a_cloud%20no_humans%20original%20scenic%20sky%20water.png"],
+  [379172,3840,2160,"https://konachan.net/image/9ac25a1fe4ac8ce3b675dd79cb42d3b5/Konachan.com%20-%20379172%20banishment%20beach%20no_humans%20original%20polychromatic%20scenic%20signed%20water.png"],
+  [379126,5098,3624,"https://konachan.net/image/63f6ee74f4e1e7ceae42422acfd40cff/Konachan.com%20-%20379126%20aobara1101%20clouds%20dark%20grass%20landscape%20no_humans%20original%20scenic%20sky%20sunset%20water.png"],
+  [378275,1500,844,"https://konachan.net/image/192cc6284bc2f32d4013421e49ddeb5c/Konachan.com%20-%20378275%20clouds%20inika%20no_humans%20original%20scenic%20signed%20sky%20summer%20tree.jpg"],
+  [377398,3508,2480,"https://konachan.net/image/5a77711f683a5bdeb7ea06815afc4399/Konachan.com%20-%20377398%20clouds%20fish.boy%20grass%20hoppip%20jumpluff%20no_humans%20pokemon%20scenic%20skiploom%20sky%20tree.jpg"],
+  [376748,1387,969,"https://konachan.net/image/7248144081e19b8f18b3767a8f719aaa/Konachan.com%20-%20376748%20bubbles%20building%20cherry_blossoms%20city%20clouds%20cola_%28gotouryouta%29%20flowers%20no_humans%20original%20petals%20scenic%20sky%20sunset%20underwater%20water.jpg"],
+  [372681,2820,1440,"https://konachan.net/image/3e7711f3681b4b0f55a184cbe986a12d/Konachan.com%20-%20372681%20building%20clouds%20dark%20grass%20no_humans%20original%20qdsn%20scenic%20sky%20stairs%20stars%20sunset.png"],
+  [372592,2444,1485,"https://konachan.net/image/da74ace51c058ce298a31c3ae777c2a1/Konachan.com%20-%20372592%20building%20city%20no_humans%20original%20oukayu%20robot%20scenic%20shade%20stairs.jpg"],
+  [372584,1920,1080,"https://konachan.net/image/386e3288dc22b4a36b978948f5819c32/Konachan.com%20-%20372584%20close%20clouds%20karanagi%20leaves%20no_humans%20original%20scenic%20sky%20summer.jpg"],
+  [372583,2000,1106,"https://konachan.net/image/a0cc0832267a6478c9e7726d11a00c57/Konachan.com%20-%20372583%20building%20clouds%20grass%20karanagi%20landscape%20no_humans%20original%20scenic%20sky.jpg"],
+  [372582,4160,2596,"https://konachan.net/image/37aedf415591fca844f1c4d30f400cdc/Konachan.com%20-%20372582%20building%20city%20clouds%20karanagi%20landscape%20night%20no_humans%20original%20scenic%20sky%20stars%20sunset.jpg"],
+  [372581,4160,2596,"https://konachan.net/image/c514c6a09a317728cefd8cfa304d171a/Konachan.com%20-%20372581%20building%20city%20clouds%20karanagi%20landscape%20no_humans%20original%20scenic%20sky.jpg"],
+  [372580,4287,2686,"https://konachan.net/image/e1cf7a251e8059346ac7ab2b42a6b38c/Konachan.com%20-%20372580%20animal%20bird%20building%20clouds%20karanagi%20no_humans%20original%20planet%20scenic%20sky%20stars.jpg"],
+  [372483,1544,858,"https://konachan.net/image/7ff60d587788e10cbd3b4ec9cfd11ea0/Konachan.com%20-%20372483%20antiquewhite%20forest%20no_humans%20original%20scenic%20tree%20water.jpg"],
+  [369280,4960,2160,"https://konachan.net/image/8c940d71106b1285ce00d7b990be7796/Konachan.com%20-%20369280%20animal%20ball%20beach%20bird%20clouds%20drink%20food%20fruit%20lhsx%20no_humans%20original%20scenic%20shade%20sky%20swim_ring%20towel%20tree%20umbrella%20water%20watermelon.jpg"],
+  [369279,4000,2250,"https://konachan.net/image/bc515e54783f7154846bece266cb78f2/Konachan.com%20-%20369279%20beach%20boat%20building%20clouds%20flowers%20lhsx%20no_humans%20original%20scenic%20shade%20sky%20tree%20umbrella%20water.jpg"],
+  [369278,4000,2250,"https://konachan.net/image/e048bfeee64edbb44c9a033d05f915ff/Konachan.com%20-%20369278%20clouds%20flowers%20forest%20grass%20lhsx%20no_humans%20original%20ruins%20scenic%20sky%20tree.jpg"],
+  [369277,4000,2250,"https://konachan.net/image/bc43e765be8ec62e61d094c6bd41b688/Konachan.com%20-%20369277%20flowers%20forest%20leaves%20lhsx%20no_humans%20original%20scenic%20shade%20tree.jpg"],
+  [368237,3200,1800,"https://konachan.net/image/fbd119010939fa1936e998b7d4ee1b3a/Konachan.com%20-%20368237%20clouds%20no_humans%20original%20peke_%28shadow105%29%20scenic%20sky%20water.png"],
+  [367143,1623,1052,"https://konachan.net/image/7c102d5ae2c756dd7be1bfd4f6e77180/Konachan.com%20-%20367143%20building%20city%20no_humans%20original%20pi-pie%20realistic%20scenic.png"],
+  [367043,1500,844,"https://konachan.net/image/ef7e946473337dd24e15c9035ef2b1cf/Konachan.com%20-%20367043%20building%20forest%20inika%20leaves%20night%20no_humans%20original%20polychromatic%20scenic%20shrine%20signed%20tree%20water.jpg"],
+  [367016,1920,1080,"https://konachan.net/image/2771e647da99594c8d068b90eea68512/Konachan.com%20-%20367016%20blue%20building%20city%20clouds%20dark%20night%20no_humans%20original%20reflection%20scenic%20sky%20stars%20tagme_%28artist%29%20tree%20water.png"],
+  [367011,1920,1080,"https://konachan.net/image/867601d6484b6f009b96f1025debc065/Konachan.com%20-%20367011%20animated%20building%20city%20clouds%20landscape%20no_humans%20original%20scenic%20sky%20sunset%20tagme_%28artist%29%20tree.gif"],
+  [367010,1575,1040,"https://konachan.net/image/bafdf0bd262a9f6db64455fbf98a5730/Konachan.com%20-%20367010%20animated%20autumn%20building%20clouds%20leaves%20lennsan%20no_humans%20original%20scenic%20shrine%20sky%20sunset%20tree.gif"],
+  [367009,1280,720,"https://konachan.net/image/1018c54f97206b9b342f7872257f94cb/Konachan.com%20-%20367009%20animal%20animated%20bird%20building%20city%20clouds%20flowers%20lennsan%20no_humans%20original%20petals%20polychromatic%20reflection%20scenic%20sky%20train%20tree%20water.gif"],
+  [367008,1640,920,"https://konachan.net/image/75641b4cedac86ff1c8fa2fcb8ccde34/Konachan.com%20-%20367008%20animated%20building%20city%20clouds%20landscape%20lennsan%20no_humans%20original%20petals%20scenic%20sky%20sunset%20tree.gif"],
+  [367006,1580,725,"https://konachan.net/image/7f8b6f7371ebef7e191fcb89625f4b03/Konachan.com%20-%20367006%20animated%20building%20cherry_blossoms%20clouds%20flowers%20landscape%20lennsan%20no_humans%20original%20petals%20reflection%20scenic%20sky%20water%20waterfall.gif"],
+  [366837,2268,1276,"https://konachan.net/image/93c86eda3ec53b4c84e0f84560f6cf58/Konachan.com%20-%20366837%20animal%20frog%20grass%20hachiya_shohei%20leaves%20no_humans%20original%20scenic%20signed%20water.jpg"],
+  [366826,3161,1580,"https://konachan.net/image/615971cbec29413db094fad6388ac8d9/Konachan.com%20-%20366826%20clouds%20dragon%20grass%20hachiya_shohei%20no_humans%20original%20ruins%20scenic%20signed%20sky.jpg"],
+  [366825,2268,1680,"https://konachan.net/image/c0e80a222c802ba6766c278e85c234b3/Konachan.com%20-%20366825%20building%20grass%20hachiya_shohei%20moon%20night%20no_humans%20original%20scenic%20signed%20sky%20stars%20train.jpg"],
+  [366824,2835,1188,"https://konachan.net/image/dccd5d2a2448989afb0b21ec152f0350/Konachan.com%20-%20366824%20clouds%20flowers%20grass%20hachiya_shohei%20mew%20no_humans%20pikachu%20pokemon%20scenic%20signed%20sky.jpg"],
+  [366599,1422,800,"https://konachan.net/image/0be2203df11f7fc564fb139cf9a8751f/Konachan.com%20-%20366599%20cherry_blossoms%20flowers%20no_humans%20original%20scenic%20shiki_makoto%20shrine%20snow%20torii%20tree%20urashimasakatasen%20winter.jpg"],
+  [366598,1422,800,"https://konachan.net/image/d2024f6ac73115eb1dd4722e18370ae5/Konachan.com%20-%20366598%20cherry_blossoms%20flowers%20no_humans%20original%20scenic%20shiki_makoto%20shrine%20torii%20tree%20urashimasakatasen.jpg"],
+  [366597,1290,800,"https://konachan.net/image/4f63a8ac6b4d1b3130724f325b18a905/Konachan.com%20-%20366597%20animal%20beach%20bird%20building%20city%20clouds%20no_humans%20original%20scenic%20shiki_makoto%20sky%20tree%20urashimasakatasen%20water.jpg"],
+  [366596,1500,844,"https://konachan.net/image/db198b264cab0d68cbc25ad42d7b6c32/Konachan.com%20-%20366596%20building%20cross%20no_humans%20original%20scenic%20shiki_makoto%20urashimasakatasen.jpg"],
+  [366595,2000,1125,"https://konachan.net/image/135304cc9d8c4cc09b3e738dac0e9534/Konachan.com%20-%20366595%20no_humans%20original%20scenic%20shiki_makoto%20stairs%20urashimasakatasen.jpg"],
+  [366594,1600,900,"https://konachan.net/image/2d4daf93c658e8198761422268bd52e7/Konachan.com%20-%20366594%20beach%20clouds%20no_humans%20original%20scenic%20shiki_makoto%20sky%20sunset%20tree%20urashimasakatasen%20water.jpg"],
+  [366593,1600,900,"https://konachan.net/image/5a583ab9dc42f3713288091425d56e6d/Konachan.com%20-%20366593%20animal%20bird%20building%20city%20clouds%20no_humans%20original%20scenic%20shiki_makoto%20sky%20urashimasakatasen.jpg"],
+  [366111,1536,960,"https://konachan.net/image/766f7b7b9e8edcd440c2dd52c31de2be/Konachan.com%20-%20366111%20animated%20building%20grass%20moon%20night%20no_humans%20original%20scenic%20setamo_map%20sky%20stairs%20stars%20tree%20waifu2x.gif"],
+  [366108,1586,886,"https://konachan.net/image/09717b5b5c40f4ebc849cd9ee4935876/Konachan.com%20-%20366108%20animal%20animated%20bird%20clouds%20no_humans%20original%20ruins%20scenic%20setamo_map%20sky%20waifu2x.gif"],
+  [366107,1504,848,"https://konachan.net/image/7b919ad7dfd37a670ff84da7d5263d83/Konachan.com%20-%20366107%20animated%20building%20moon%20night%20no_humans%20original%20scenic%20setamo_map%20sky%20stars%20tree%20waifu2x.gif"],
+  [366105,1280,720,"https://konachan.net/image/020583c68ea6557e19bfe8fe4da6659f/Konachan.com%20-%20366105%20animal%20animated%20bird%20clouds%20industrial%20no_humans%20original%20ruins%20scenic%20setamo_map%20sky%20tree%20waifu2x%20water%20waterfall.gif"],
+  [366100,1602,902,"https://konachan.net/image/65826ec2a1d1f5f4660ea02f9c46ae65/Konachan.com%20-%20366100%20animated%20cherry_blossoms%20flowers%20no_humans%20original%20scenic%20setamo_map%20sky%20tree%20waifu2x.gif"],
+  [365894,2500,1250,"https://konachan.net/image/0065564ed56400dc77061ea3ec5cc646/Konachan.com%20-%20365894%20animal%20blue%20book%20enfance%20fish%20food%20no_humans%20original%20paper%20scenic%20signed%20underwater%20water.png"],
+  [365893,2500,1250,"https://konachan.net/image/de5792bf4cc7766417b7ca4a372cd683/Konachan.com%20-%20365893%20book%20enfance%20flowers%20green%20leaves%20mirror%20no_humans%20original%20scenic%20signed.png"],
+  [365892,2500,1333,"https://konachan.net/image/85a7e899bdc4c5e4667e0192b869a575/Konachan.com%20-%20365892%20boat%20building%20clouds%20enfance%20landscape%20no_humans%20original%20scenic%20signed%20sky%20stairs%20tree%20water%20waterfall.jpg"],
+  [365884,1366,900,"https://konachan.net/image/70bacdfb57807efbe9f62e3e73c89659/Konachan.com%20-%20365884%20animal%20building%20city%20fish%20no_humans%20original%20poten%20scenic%20turtle%20underwater%20water.jpg"],
+  [365881,1500,855,"https://konachan.net/image/d66431876e74976132d98c9e4b294f1c/Konachan.com%20-%20365881%20building%20city%20clouds%20moon%20no_humans%20original%20poten%20scenic%20sky%20stairs%20tree%20water.jpg"],
+  [365596,2816,1584,"https://konachan.net/image/b27079b4d8faa7f0872f73020ae99914/Konachan.com%20-%20365596%20bangqiao_yan%20beach%20no_humans%20original%20scenic%20shade%20tree%20water.jpg"],
+  [365594,3800,1584,"https://konachan.net/image/f893074922b77f66d83c3b266aac9598/Konachan.com%20-%20365594%20bangqiao_yan%20building%20city%20clouds%20landscape%20no_humans%20original%20scenic%20sky%20sunset.jpg"],
+  [365593,2816,1584,"https://konachan.net/image/d9252df62b4bf6f8e7411bae905e565f/Konachan.com%20-%20365593%20bangqiao_yan%20clouds%20grass%20no_humans%20original%20scenic%20shade%20sky%20tree.jpg"],
+  [365542,3840,2160,"https://konachan.net/image/f8881e44ce52f7808a8b8831dd3fbae9/Konachan.com%20-%20365542%20bed%20book%20feathers%20flowers%20leaves%20mirror%20no_humans%20original%20paper%20scenic%20shirt%20sudzuke.png"],
+  [364526,1920,928,"https://konachan.net/image/3e43990fce7c2faaa34e17a6405a8f22/Konachan.com%20-%20364526%20animal%20bell%20building%20butterfly%20cat%20city%20clouds%20flowers%20leaves%20no_humans%20original%20scenic%20sky%20yosanann.png"],
+  [363710,3840,2160,"https://konachan.net/image/2b1c3339c0175f55d9e887afae6a12ca/Konachan.com%20-%20363710%2033paradox%203d%20building%20city%20clouds%20no_humans%20pool%20scenic%20sky%20sunset%20water.jpg"],
+  [363709,3840,2160,"https://konachan.net/image/0ff9a6103868a1a00a3ec8e90ea8a99d/Konachan.com%20-%20363709%2033paradox%203d%20building%20city%20clouds%20no_humans%20pool%20scenic%20sky%20water.jpg"],
+  [363699,3840,2160,"https://konachan.net/image/b034e1e5720cdcc7b0256988ab895bd7/Konachan.com%20-%20363699%2033paradox%203d%20building%20city%20night%20no_humans%20pool%20scenic%20stars%20water.jpg"],
+  [360605,4913,2091,"https://konachan.net/image/df44617d597fdc3eb88a40828d37d112/Konachan.com%20-%20360605%20clouds%20grass%20landscape%20naruwe%20no_humans%20original%20scenic%20sky.png"],
+  [360457,7307,3376,"https://konachan.net/image/881f33236ea53c7211c7c4621fe53699/Konachan.com%20-%20360457%20animal%20bird%20building%20clouds%20luo_kong%20no_humans%20reflection%20scenic%20sky%20stars%20the_tale_of_food%20water.jpg"]
+];
+
 const KONACHAN_ENDPOINT = 'https://konachan.net/post.json';
 const JINA_READER_ENDPOINT = 'https://r.jina.ai/';
 const KONACHAN_TAGS = 'scenic no_humans rating:safe';
@@ -1319,7 +1409,7 @@ const CORS_HEADERS = {
   'Access-Control-Expose-Headers':
     'X-Image-Provider, X-Image-Id, X-Image-Page, X-Image-Source, ' +
     'X-Image-Width, X-Image-Height, X-Target-Width, X-Target-Height, ' +
-    'X-Image-Resized, X-Image-Fallback',
+    'X-Image-Resized, X-Image-Fallback, X-Image-Pool',
   'Access-Control-Max-Age': '86400'
 };
 
@@ -1571,6 +1661,63 @@ async function fetchKonachanViaJina(urlString) {
   }
 }
 
+function dimensionMatches(item, target) {
+  const width = Number(item.width) || 0;
+  const height = Number(item.height) || 0;
+
+  if (target.orientation === 'portrait') {
+    return height >= target.h * 0.75;
+  }
+  if (target.orientation === 'landscape') {
+    return width >= target.w * 0.75;
+  }
+  return Math.min(width, height) >= Math.min(target.w, target.h) * 0.75;
+}
+
+function konachanItem(item, width, height, imageUrl, poolSource) {
+  const id = String(item.id);
+  const page = `https://konachan.net/post/show/${id}`;
+
+  return {
+    provider: 'konachan',
+    poolSource,
+    id,
+    imageUrl,
+    original: imageUrl,
+    width: Number(width) || 0,
+    height: Number(height) || 0,
+    page,
+    source: item.source || page
+  };
+}
+
+function normalizeKonachanPool(data, target) {
+  const usable = data.filter((item) => {
+    if (!item || !item.file_url || !item.width || !item.height) return false;
+    const tags = String(item.tags || '').toLowerCase().split(/\s+/);
+    if (!tags.includes('scenic')) return false;
+    if (!tags.includes('no_humans')) return false;
+    if (tags.some((tag) => HUMAN_TAGS.has(tag))) return false;
+    return !tags.includes('watermark');
+  });
+
+  const dimensionMatched = usable.filter((item) => dimensionMatches(item, target));
+  const pool = dimensionMatched.length ? dimensionMatched : usable;
+
+  return pool.map((item) =>
+    konachanItem(item, item.width, item.height, item.file_url, 'live')
+  );
+}
+
+function getEmbeddedKonachanPool(target) {
+  const all = STATIC_KONACHAN_POOL.map(([id, width, height, imageUrl]) =>
+    konachanItem({ id }, width, height, imageUrl, 'embedded')
+  );
+  const dimensionMatched = all.filter((item) => dimensionMatches(item, target));
+
+  return dimensionMatched.length ? dimensionMatched : all;
+}
+
 async function getKonachanPool(target) {
   const api = new URL(KONACHAN_ENDPOINT);
   api.searchParams.set('tags', KONACHAN_TAGS);
@@ -1585,46 +1732,27 @@ async function getKonachanPool(target) {
     data = await fetchJson(api.toString(), KONACHAN_DIRECT_TIMEOUT_MS);
   } catch (directError) {
     console.error('Konachan direct API failed, trying Jina Reader:', directError);
-    data = await fetchKonachanViaJina(api.toString());
+    try {
+      data = await fetchKonachanViaJina(api.toString());
+    } catch (jinaError) {
+      console.error('Konachan Jina fallback failed, using embedded pool:', jinaError);
+      return getEmbeddedKonachanPool(target);
+    }
   }
 
-  if (!Array.isArray(data)) return [];
+  if (!Array.isArray(data)) {
+    console.error('Konachan returned non-array, using embedded pool');
+    return getEmbeddedKonachanPool(target);
+  }
 
-  const usable = data.filter((item) => {
-    if (!item || !item.file_url || !item.width || !item.height) return false;
-    const tags = String(item.tags || '').toLowerCase().split(/\s+/);
-    if (!tags.includes('scenic')) return false;
-    if (!tags.includes('no_humans')) return false;
-    if (tags.some((tag) => HUMAN_TAGS.has(tag))) return false;
-    return !tags.includes('watermark');
-  });
+  const pool = normalizeKonachanPool(data, target);
 
-  const dimensionMatched = usable.filter((item) => {
-    if (target.orientation === 'portrait') {
-      return Number(item.height) >= target.h * 0.75;
-    }
-    if (target.orientation === 'landscape') {
-      return Number(item.width) >= target.w * 0.75;
-    }
-    return Math.min(Number(item.width), Number(item.height)) >=
-      Math.min(target.w, target.h) * 0.75;
-  });
+  if (!pool.length) {
+    console.error('Konachan returned an empty pool, using embedded pool');
+    return getEmbeddedKonachanPool(target);
+  }
 
-  const pool = dimensionMatched.length ? dimensionMatched : usable;
-
-  return pool.map((item) => {
-    const page = `https://konachan.net/post/show/${item.id}`;
-    return {
-      provider: 'konachan',
-      id: String(item.id),
-      imageUrl: item.file_url,
-      original: item.file_url,
-      width: Number(item.width) || 0,
-      height: Number(item.height) || 0,
-      page,
-      source: item.source || page
-    };
-  });
+  return pool;
 }
 
 function buildResized(item, w, h) {
@@ -1779,6 +1907,7 @@ function imageHeaders(item, target, contentType, isResized) {
     'X-Target-Width': String(target.w),
     'X-Target-Height': String(target.h),
     'X-Image-Resized': isResized ? '1' : '0',
+    'X-Image-Pool': item.poolSource || 'live',
     'X-Image-Fallback': '0'
   });
 }
@@ -1801,6 +1930,7 @@ function fallbackImageResponse(target) {
       'Content-Disposition': 'inline; filename="random-scenery-fallback.png"',
       'X-Image-Provider': 'fallback',
       'X-Image-Id': 'fallback',
+      'X-Image-Pool': 'fallback',
       'X-Image-Fallback': '1',
       'X-Target-Width': String(target.w),
       'X-Target-Height': String(target.h)
@@ -1873,6 +2003,7 @@ export default {
       return jsonResponse({
         code: 200,
         provider: item.provider,
+        pool: item.poolSource || 'live',
         id: item.id,
         width: target.w,
         height: target.h,
@@ -1903,6 +2034,7 @@ export default {
           'X-Image-Id': headerSafe(item.id),
           'X-Image-Page': headerSafe(item.page),
           'X-Image-Source': headerSafe(item.source),
+          'X-Image-Pool': headerSafe(item.poolSource || 'live'),
           'X-Target-Width': String(target.w),
           'X-Target-Height': String(target.h)
         })
