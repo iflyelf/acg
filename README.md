@@ -11,6 +11,7 @@
 
 - 仅使用 Konachan，查询标签为 `scenic no_humans rating:safe`
 - 额外过滤人物相关标签以及带 `watermark` 的图片
+- Konachan API 直连被 Cloudflare 人机验证拦截时，自动通过 Jina Reader 读取同一份 Konachan JSON 元数据；图片本身仍然只来自 Konachan，并继续通过 `wsrv.nl` 缩放
 - 每次请求随机选图，不做 Worker 端缓存
 - 手机、平板、PC 自适应：
   - 手机：`720 × 1280`
@@ -256,7 +257,8 @@ curl 'https://acg.example.workers.dev/health'
 - 通过 `no_humans` 标签过滤人物，但标签由上传者填写，不能 100% 保证画面中绝对没有人。
 - 每次请求都是独立随机选图，可能出现重复图片；没有持久化已发送图片 ID。
 - Worker 端不缓存图池；实际图片可能被上游缩放服务缓存。
-- Konachan 或缩放服务不可用时，会返回失败 PNG 或 502 JSON。
+- Jina Reader 仅作为 Konachan 元数据的第三方读取兜底，可能受其限流或可用性影响；不会引入第二个图片源。
+- Konachan、Jina Reader 和缩放服务都不可用时，会返回失败 PNG 或 502 JSON。
 - 不要把 Cloudflare API Token、GitHub Token 等敏感信息写入仓库。
 
 ## 🔗 相关链接

@@ -1263,6 +1263,7 @@ const FALLBACK_IMAGES = Object.fromEntries(
 
 
 const KONACHAN_ENDPOINT = 'https://konachan.net/post.json';
+const JINA_READER_ENDPOINT = 'https://r.jina.ai/';
 const KONACHAN_TAGS = 'scenic no_humans rating:safe';
 const HUMAN_TAGS = new Set([
   '1girl',
@@ -1297,6 +1298,8 @@ const UPSTREAM_UA =
 const MIN_DIMENSION = 200;
 const MAX_DIMENSION = 3840;
 const API_TIMEOUT_MS = 12_000;
+const KONACHAN_DIRECT_TIMEOUT_MS = 6_000;
+const JINA_READER_TIMEOUT_MS = 10_000;
 const IMAGE_TIMEOUT_MS = 18_000;
 const IMAGE_ATTEMPT_BUDGET_MS = 24_000;
 
@@ -1499,9 +1502,12 @@ function resolveTarget(request, url) {
   return { w, h, orientation: orientationOf(w, h) };
 }
 
-async function fetchJson(urlString) {
+async function fetchJson(urlString, timeoutMs = API_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const timer = setTimeout(
+    () => controller.abort(),
+    Math.max(3000, timeoutMs)
+  );
 
   try {
     const response = await fetch(urlString, {
@@ -1524,13 +1530,64 @@ async function fetchJson(urlString) {
   }
 }
 
+async function fetchKonachanViaJina(urlString) {
+  const readerUrl = `${JINA_READER_ENDPOINT}${urlString}`;
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    JINA_READER_TIMEOUT_MS
+  );
+
+  try {
+    const response = await fetch(readerUrl, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': UPSTREAM_UA,
+        Accept: 'text/plain'
+      },
+      cf: { cacheEverything: false, cacheTtl: 0 }
+    });
+
+    if (!response.ok) {
+      throw new Error(`jina HTTP ${response.status}`);
+    }
+
+    const text = await response.text();
+    const marker = 'Markdown Content:';
+    const content = text.includes(marker)
+      ? text.slice(text.indexOf(marker) + marker.length)
+      : text;
+    let start = content.indexOf('[{');
+    if (start === -1) start = content.indexOf('[');
+    const end = content.lastIndexOf(']');
+
+    if (start === -1 || end <= start) {
+      throw new Error('jina response did not contain a JSON array');
+    }
+
+    return JSON.parse(content.slice(start, end + 1));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function getKonachanPool(target) {
   const api = new URL(KONACHAN_ENDPOINT);
   api.searchParams.set('tags', KONACHAN_TAGS);
   api.searchParams.set('limit', '100');
   api.searchParams.set('_', String(Date.now()));
 
-  const data = await fetchJson(api.toString());
+  let data;
+
+  try {
+    // Konachan sometimes answers Cloudflare Worker egress with a challenge.
+    // Read the same Konachan JSON through Jina Reader as a metadata-only fallback.
+    data = await fetchJson(api.toString(), KONACHAN_DIRECT_TIMEOUT_MS);
+  } catch (directError) {
+    console.error('Konachan direct API failed, trying Jina Reader:', directError);
+    data = await fetchKonachanViaJina(api.toString());
+  }
+
   if (!Array.isArray(data)) return [];
 
   const usable = data.filter((item) => {
